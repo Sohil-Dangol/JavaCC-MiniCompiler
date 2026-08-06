@@ -1,0 +1,2 @@
+m: if x<5 (x,y) becomes (x+1,y*2) and m else RET1;
+run m (1,2)

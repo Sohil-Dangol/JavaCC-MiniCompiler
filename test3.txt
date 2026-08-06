@@ -1,0 +1,2 @@
+odd: if x<100 (x,y) becomes (3*x+1,y) and Q else OVERFLOW;
+run odd (0,0)

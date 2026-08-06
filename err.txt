@@ -1,0 +1,3 @@
+Picked up _JAVA_OPTIONS: -Xmx12g
+Line 1
+Syntax error: expected <ID>; got "(".

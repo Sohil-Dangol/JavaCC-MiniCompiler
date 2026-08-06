@@ -1,0 +1,2 @@
+A: if x<1 (x,y) becomes (1,2) and A else (3,4) and A;
+run A (0,0)

@@ -1,0 +1,2 @@
+even: if a<2 (a,b) becomes (b,a) and Q else (a-2,b+1) and even;
+run odd (0,0)

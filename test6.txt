@@ -1,0 +1,2 @@
+m: if x<10 (x,y) becomes (3*x+1,y) and m else OVERFLOW;
+run m (2,3)

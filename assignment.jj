@@ -1,0 +1,598 @@
+PARSER_BEGIN(TPTP)
+
+import java.util.Map;
+import java.util.HashMap;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+
+public class TPTP {
+    static Map<String, Step> programSteps = new HashMap<>();
+    static String firstNonSimpleStep = null; // name of first non-simple step, null if all simple so far
+    static String programOutput = null;      // buffered until EOF confirmed
+    
+    public static void main(String args[]) {
+        try {
+            TPTP parser = new TPTP(System.in);  // create parser instance
+            parser.Program();    // start parsing process 
+            System.out.println(programOutput);  // final output for success
+        } catch (TPTPException e) {
+            // semantic error 
+            System.out.println("Failure");
+            System.err.println("Line " + e.line); // print line number 
+            System.err.println(e.getMessage()); 
+        } catch (ParseException e) {
+            // javacc syntax error
+            System.out.println("Failure");
+            Token bad = e.currentToken.next;
+            System.err.println("Line " + bad.beginLine); // print line number 
+            System.err.println("Syntax error: expected " + buildExpected(e) + "; got " + (bad.kind == 0 ? "<EOF>" : "\"" + bad.image + "\"") + ".");     // Show expected tokens vs what was actually found
+        } catch (TokenMgrError e) {
+            // Lexical error (invalid character before parsing even starts)
+            System.out.println("Failure");
+            System.err.println("Line" + 1); // Lexer fails before token stream exists → default to line 1
+            System.err.println("Lexical error: invalid character in input.");
+        }
+    }
+
+    // turns javacc's expected token array into a readable string
+    static String buildExpected(ParseException e) {
+        Set<String> tokens = new LinkedHashSet<>();
+        for (int[] seq : e.expectedTokenSequences){
+            tokens.add(tokenImage[seq[0]].replaceAll("\"", ""));
+        }
+        return String.join(", ", tokens);
+    }
+
+    // checks if any subtraction appears anywhere in the tree
+    static boolean containsMinus(Expr e) {
+        if (e instanceof BinExpr) {
+            BinExpr b = (BinExpr) e;
+            if (b.op == '-'){
+                return true;
+            }
+            return containsMinus(b.left) || containsMinus(b.right); // recursively search both subtrees
+        }
+        return false; // base cases (NumExpr, VarExpr) contain no operators
+    }
+
+    // no multiplication, subtraction only allowed with a numeric literal on the right
+    static boolean isPositiveLinear(Expr e) {
+        if (e instanceof BinExpr) {
+            BinExpr b = (BinExpr) e;
+            if (b.op == '*'){
+                return false;
+            }
+            if (b.op == '-' && !(b.right instanceof NumExpr)){
+                return false;
+            }
+            return isPositiveLinear(b.left) && isPositiveLinear(b.right); // recursively search both subtrees
+        }
+        return true; // variables and constants are always valid base cases
+    }
+
+    // evaluates expr at the minimum possible parameter values
+    // used to check s3: when cond is false, false-branch exprs must be >= 0
+    // when ID1 and ID2 take minimal values allowed by negated condition
+    static long evalAtMin(Expr e, String id1, String id2, long min1, long min2) {
+        if (e instanceof NumExpr){  // constant value
+            return ((NumExpr) e).value;
+        }
+        // replace variable with min value 
+        if (e instanceof VarExpr) {
+            String n = ((VarExpr) e).name;
+            if (n.equals(id1)) return min1;
+            if (n.equals(id2)) return min2;
+            return 0;
+        }
+        BinExpr b = (BinExpr) e;
+        long left = evalAtMin(b.left, id1, id2, min1, min2);    // recursively evaluate both sides under minimum assignment
+        long right = evalAtMin(b.right, id1, id2, min1, min2);
+        if (b.op == '+'){
+            return left + right;
+        }
+        if (b.op == '-'){
+            return left - right;
+        }
+        return left * right;
+    }
+}
+
+class TPTPException extends RuntimeException {
+    int line;
+    TPTPException(int line, String msg) {
+        super(msg);
+        this.line = line;
+    }
+}
+
+// ===== DATA STRUCTURES =====
+
+class Step {
+    String name;
+    String id1, id2;  // parameter names, local to this step
+    Condition cond;
+    Branch trueBranch;
+    Branch falseBranch;
+}
+
+class Branch {
+    Expr expr1, expr2; // null if short form (coordinates unchanged)
+    String nextStep;
+}
+
+abstract class Expr {
+    abstract long eval(Map<String, Long> vars);
+}
+
+class NumExpr extends Expr {
+    long value;
+    NumExpr(long v) { 
+        value = v; 
+    }
+    long eval(Map<String, Long> vars) { 
+        return value; 
+    }
+}
+
+class VarExpr extends Expr {
+    String name;
+    VarExpr(String n) { 
+        name = n; 
+    }
+    long eval(Map<String, Long> vars) { 
+        return vars.get(name); 
+    }
+}
+
+class BinExpr extends Expr {
+    Expr left, right;
+    char op;
+    BinExpr(Expr l, char o, Expr r) {
+        left= l; 
+        op= o; 
+        right= r; 
+    }
+    long eval(Map<String, Long> vars) {
+        long a = left.eval(vars), b = right.eval(vars);
+        if (op == '+') {
+            return a + b;
+        }
+        if (op == '-'){
+            return a - b;
+        }
+        return a * b;
+    }
+}
+
+class Condition {
+    String var;
+    long value;
+    boolean eval(Map<String, Long> vars) {
+        return vars.get(var) < value;
+    }
+}
+
+PARSER_END(TPTP)
+
+SKIP :
+{
+    " " | "\t" | "\n" | "\r"
+}
+
+TOKEN :
+{
+    < IF: "if" >
+|   < ELSE: "else" >
+|   < AND: "and" >
+|   < BECOMES: "becomes" >
+|   < RUN: "run" >
+
+|   < PLUS: "+" >
+|   < MINUS: "-" >
+|   < TIMES: "*" >
+|   < LT: "<" >
+
+|   < COLON: ":" >
+|   < COMMA: "," >
+|   < LPAREN: "(" >
+|   < RPAREN: ")" >
+|   < SEMI: ";" >
+
+|   < #DIGIT: ["0"-"9"] >
+|   < #LETTER: ["a"-"z","A"-"Z"] >
+
+|   < ID: <LETTER> (<LETTER> | <DIGIT> | "_")* >
+|   < NUM: (<DIGIT>)+ >
+}
+
+// Program -> StepList Run EOF
+void Program() :
+{}
+{
+    StepList() Run() <EOF>
+}
+
+// StepList -> (Step ;)+
+void StepList() :
+{}
+{
+    ( Step() <SEMI> )+
+}
+
+// Run -> run id (x,y) 
+void Run() : 
+{
+    Token t1, t2, t3;
+    String startStep;
+    long curX, curY;
+    Map<String, Long> vars = new HashMap<>();
+    Set<String> visited = new HashSet<>();
+    String currentStep;
+    String state;
+    boolean isLoop = false;
+    String terminatingStep = null;
+}
+{
+    <RUN>
+    t1 = <ID>
+    <LPAREN>
+    t2 = <NUM>
+    <COMMA>
+    t3 = <NUM>
+    <RPAREN>
+
+    {   // start interpreting process
+        startStep = t1.image;
+        curX = Long.parseLong(t2.image);
+        curY = Long.parseLong(t3.image);
+
+        StringBuilder sb = new StringBuilder(); // used to build output message
+
+        // checks to ensure there is a starting step
+        Step start = programSteps.get(startStep);
+        if (start == null) {
+            throw new TPTPException(t1.beginLine, "Starting step '" + start + "' is not defined.");
+        }
+        // check if instructions contain a non simple instruction 
+        if (firstNonSimpleStep != null) {
+            sb.append("Success\n");
+            sb.append("Non-simple\n");
+            sb.append(firstNonSimpleStep);
+            programOutput = sb.toString();
+            return;
+        }
+
+        currentStep = startStep;
+        // loop through all instructions sequentially
+        while (currentStep != null) {
+
+            Step s = programSteps.get(currentStep);
+
+            // stepped into an unknown name 
+            if (s == null) {
+                terminatingStep = currentStep;
+                break;
+            }
+
+            // re-bind coordinates to this step's parameter names
+            vars.put(s.id1, curX);
+            vars.put(s.id2, curY);
+
+            // creates state instance to add to previous states list 
+            state = currentStep + " (" + curX + "," + curY + ")";
+
+            if (visited.contains(state)) {
+                isLoop = true;
+                break;
+            }
+
+            visited.add(state);
+            // chooses which branch to go down
+            Branch branch = s.cond.eval(vars) ? s.trueBranch : s.falseBranch;
+
+            // extracts x and y 
+            if (branch.expr1 != null) {
+                curX = branch.expr1.eval(vars);
+                curY = branch.expr2.eval(vars);
+            }
+
+            currentStep = branch.nextStep;
+        }
+        // forms successful run output 
+        sb.append("Success\n");
+        if (isLoop) {
+            sb.append("Simple\n");
+            sb.append("Loop");
+        } else {
+            sb.append("Simple\n");
+            sb.append(terminatingStep + " " + curX + " " + curY);
+        }
+        programOutput = sb.toString();
+    }
+}
+
+// Step -> ID : if Cond (id1,id2) TrueBranch else FalseBranch
+Step Step() :
+{
+    String name;
+    String id1, id2;
+    Condition cond;
+    Branch trueBranch;
+    Branch falseBranch;
+    String[] vars;
+}
+{
+    name = <ID>.image
+    {   
+        if (programSteps.containsKey(name)) {   // step name already exists
+            throw new TPTPException(token.beginLine, "Step with name '" + name + "' already defined.");
+        }
+    }
+    <COLON>
+    <IF>
+    cond = Cond()
+
+    vars = VarPair()
+    {
+        id1 = vars[0];
+        id2 = vars[1];
+
+        if (id1.equals(id2)) {  // enforce different id rule
+            throw new TPTPException(token.beginLine, "Step parameters must be distinct; '" + id1 + "' used twice.");
+        }
+
+        if (!cond.var.equals(id1) && !cond.var.equals(id2)) {   // condition must include variable from step parameter 
+            throw new TPTPException(token.beginLine, "Condition variable '" + cond.var + "' must be one of the step parameters ('" + id1 + "' or '" + id2 + "').");
+        }
+    }
+
+    trueBranch = TrueBranch()
+    <ELSE>
+    falseBranch = FalseBranch()
+
+    {
+        Step s = new Step();
+        s.name = name;
+        s.id1 = id1;
+        s.id2 = id2;
+        s.cond = cond;
+        s.trueBranch = trueBranch;
+        s.falseBranch = falseBranch;
+        // adds instruction to instruction list to be interpreted
+        programSteps.put(name, s);
+
+        // simplicity checks — only care about the first violation
+        if (firstNonSimpleStep == null) {
+
+            boolean simple = true;
+            // s1: Must all be positive linear 
+            // s2: true-branch exprs must have no subtraction
+            if (trueBranch.expr1 != null) {
+                if (!isPositiveLinear(trueBranch.expr1)){
+                    simple = false;
+                }
+                if (containsMinus(trueBranch.expr1)){
+                    simple = false;
+                }
+            }
+            if (trueBranch.expr2 != null) {
+                if (!isPositiveLinear(trueBranch.expr2)){
+                    simple = false;
+                }
+                if (containsMinus(trueBranch.expr2)) {
+                    simple = false;
+                }
+            }
+
+            // when cond is false: the constrained var is >= NUM, the other >= 0
+            long min1, min2;
+            if (cond.var.equals(id1)){
+                min1 = cond.value; 
+                min2 = 0; 
+            }
+            else{
+                min1 = 0; 
+                min2 = cond.value; 
+            }
+
+            // s3: false-branch exprs must be >= 0 at those minimums
+            if (falseBranch.expr1 != null) {
+                if (!isPositiveLinear(falseBranch.expr1)){
+                    simple = false;
+                }
+                else if (evalAtMin(falseBranch.expr1, id1, id2, min1, min2) < 0){
+                    simple = false;
+                }
+            }
+            if (falseBranch.expr2 != null) {
+                if (!isPositiveLinear(falseBranch.expr2)){
+                    simple = false;
+                }
+                else if (evalAtMin(falseBranch.expr2, id1, id2, min1, min2) < 0){
+                    simple = false;
+                }
+            }
+
+            if (!simple){
+                firstNonSimpleStep = name;
+            }
+        }
+
+        return s;
+    }
+}
+// VarPair -> (t1,t2)
+String[] VarPair() :
+{
+    Token t1, t2;
+}
+{
+    <LPAREN>
+    t1 = <ID>
+    <COMMA>
+    t2 = <ID>
+    <RPAREN>
+    {
+        return new String[]{t1.image, t2.image};
+    }
+}
+
+// trueBranch -> becomes (E1,E2) and STEP | STEP  
+Branch TrueBranch() :
+{
+    Expr e1 = null, e2 = null;
+    String next;
+    Expr[] pair;
+    Branch tmp = new Branch();
+}
+{
+    (
+        <BECOMES>
+        pair = Pair()
+        <AND>
+        next = <ID>.image
+        { 
+            e1 = pair[0]; 
+            e2 = pair[1];
+        }
+    |
+        next = <ID>.image
+    )
+    {
+        tmp.expr1 = e1;
+        tmp.expr2 = e2;
+        tmp.nextStep = next;
+        return tmp;
+    }
+}
+
+// falseBranch -> (E3,E4) and STEP | STEP
+Branch FalseBranch() :
+{
+    Expr e1 = null, e2 = null;
+    String next;
+    Expr[] pair;
+    Branch tmp = new Branch();
+}
+{
+    (
+        pair = Pair()
+        <AND>
+        next = <ID>.image
+        { 
+            e1 = pair[0]; 
+            e2 = pair[1]; 
+        }
+    |
+        next = <ID>.image
+    )
+    {
+        tmp.expr1 = e1;
+        tmp.expr2 = e2;
+        tmp.nextStep = next;
+        return tmp;
+    }
+}
+// Pair -> (e1,e2)
+Expr[] Pair() :
+{
+    Expr e1, e2;
+}
+{
+    <LPAREN>
+    e1 = Expr()
+    <COMMA>
+    e2 = Expr()
+    <RPAREN>
+    { 
+        return new Expr[]{e1, e2}; 
+    }
+}
+
+// Cond -> ID < NUM
+Condition Cond() :
+{
+    Token idToken, numToken;
+}
+{
+    idToken = <ID>
+    <LT>
+    numToken = <NUM>
+    {
+        Condition c = new Condition();
+        c.var = idToken.image;
+        c.value = Long.parseLong(numToken.image);
+        return c;
+    }
+}
+
+// left-associative, + and - same precedence, * higher
+Expr Expr() :
+{
+    Expr left, right;
+    Token op;
+}
+{
+    left = MulExpr()
+    (
+        op = <PLUS>  right = MulExpr()
+        { 
+            left = new BinExpr(left, op.image.charAt(0), right); 
+        }
+    |
+        op = <MINUS> right = MulExpr()
+        { 
+            left = new BinExpr(left, op.image.charAt(0), right); 
+        }
+    )*
+    { 
+        return left; 
+    }
+}
+// mulExpr -> base (x base)* 
+Expr MulExpr() :
+{
+    Expr left, right;
+    Token op;
+}
+{
+    left = Base()
+    (
+        op = <TIMES> right = Base()
+        { 
+            left = new BinExpr(left, op.image.charAt(0), right); 
+        }
+    )*
+    { 
+        return left; 
+    }
+}
+
+// Base -> NUM | ID | (Expr) | - Base
+Expr Base() :
+{
+    Token t;
+    Expr e;
+}
+{
+    t = <NUM>   // case of number 
+    { 
+        return new NumExpr(Long.parseLong(t.image)); 
+    }
+|
+    t = <ID>   // case of id 
+    { 
+        return new VarExpr(t.image); 
+    }
+|
+    <LPAREN> e = Expr() <RPAREN> // case of expression
+    { 
+        return e; 
+    }
+|
+    <MINUS> e = Base() // case of negative number 
+    { 
+        return new BinExpr(new NumExpr(0), '-', e); 
+    }
+}

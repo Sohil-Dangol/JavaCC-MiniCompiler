@@ -1,0 +1,2 @@
+pardec: if r<1 (n,r) becomes (n,0) and even else (n,0) and odd;
+run odd (0,0)
